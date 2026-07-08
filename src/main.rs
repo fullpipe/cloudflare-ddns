@@ -1,6 +1,7 @@
 mod cf_ip_filter;
 mod cloudflare;
 mod config;
+mod docker;
 mod domain;
 mod notifier;
 mod pp;
@@ -11,12 +12,15 @@ use crate::cloudflare::{Auth, CloudflareHandle};
 use crate::config::{AppConfig, CronSchedule};
 use crate::notifier::{CompositeNotifier, Heartbeat, Message};
 use crate::pp::PP;
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use crate::provider::IpType;
 use rand::RngExt;
 use reqwest::Client;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::signal;
+use tokio::sync::watch;
+use tokio::sync::watch::Receiver;
 use tokio::time::{sleep, Duration};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -120,8 +124,43 @@ async fn main() {
         r.store(false, Ordering::SeqCst);
     });
 
+    let static_domains = app_config.domains.clone();
+    let (domains_tx, domains_rx) = watch::channel(static_domains.clone());
+
+    if let Some(docker_sock) = app_config.docker_host.clone() {
+        match docker::spawn_docker_domain_scanner(
+            static_domains,
+            docker_sock,
+            &mut domains_tx.clone(),
+            running.clone(),
+            &ppfmt,
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                ppfmt.errorf(
+                    pp::EMOJI_ERROR,
+                    &format!("DOCKER unable to scan: {}", e.to_string()),
+                );
+
+                return;
+            }
+        }
+    }
+
     // Start heartbeat
     heartbeat.start().await;
+
+    let _ = docker::spawn_domain_cleanup(
+        &app_config,
+        &mut domains_rx.clone(),
+        running.clone(),
+        &ppfmt,
+        &handle,
+        &notifier,
+    )
+    .await;
 
     let mut cf_cache = cf_ip_filter::CachedCloudflareFilter::new();
     let detection_client = Client::builder()
@@ -131,10 +170,32 @@ async fn main() {
 
     if app_config.legacy_mode {
         // --- Legacy mode (original cloudflare-ddns behavior) ---
-        run_legacy_mode(&app_config, &handle, &notifier, &heartbeat, &ppfmt, running, &mut cf_cache, &detection_client).await;
+        run_legacy_mode(
+            &app_config,
+            &mut domains_rx.clone(),
+            &handle,
+            &notifier,
+            &heartbeat,
+            &ppfmt,
+            running,
+            &mut cf_cache,
+            &detection_client,
+        )
+        .await;
     } else {
         // --- Env var mode (cf-ddns behavior) ---
-        run_env_mode(&app_config, &handle, &notifier, &heartbeat, &ppfmt, running, &mut cf_cache, &detection_client).await;
+        run_env_mode(
+            &app_config,
+            &mut domains_rx.clone(),
+            &handle,
+            &notifier,
+            &heartbeat,
+            &ppfmt,
+            running,
+            &mut cf_cache,
+            &detection_client,
+        )
+        .await;
     }
 
     // On shutdown: delete records if configured
@@ -144,13 +205,12 @@ async fn main() {
     }
 
     // Exit heartbeat
-    heartbeat
-        .exit(&Message::new_ok("Shutting down"))
-        .await;
+    heartbeat.exit(&Message::new_ok("Shutting down")).await;
 }
 
 async fn run_legacy_mode(
     config: &AppConfig,
+    domains_chan: &mut Receiver<HashMap<IpType, Vec<String>>>,
     handle: &CloudflareHandle,
     notifier: &CompositeNotifier,
     heartbeat: &Heartbeat,
@@ -181,23 +241,71 @@ async fn run_legacy_mode(
             (false, false) => println!("Both IPv4 and IPv6 are disabled"),
         }
 
-        while running.load(Ordering::SeqCst) {
-            updater::update_once(config, handle, notifier, heartbeat, cf_cache, ppfmt, &mut noop_reported, detection_client).await;
+        if config.update_on_start {
+            let domains = domains_chan.borrow_and_update();
+            updater::update_once(
+                config,
+                &domains,
+                handle,
+                notifier,
+                heartbeat,
+                cf_cache,
+                ppfmt,
+                &mut noop_reported,
+                detection_client,
+            )
+            .await;
+        }
 
+        while running.load(Ordering::SeqCst) {
             for _ in 0..legacy.ttl {
                 if !running.load(Ordering::SeqCst) {
                     break;
                 }
+
+                match domains_chan.has_changed() {
+                    Ok(true) => break, // Changed
+                    Ok(false) => {}    // No change yet
+                    Err(_) => return,  // channel closed
+                }
+
                 sleep(Duration::from_secs(1)).await;
             }
+
+            let domains = domains_chan.borrow_and_update();
+            updater::update_once(
+                config,
+                &domains,
+                handle,
+                notifier,
+                heartbeat,
+                cf_cache,
+                ppfmt,
+                &mut noop_reported,
+                detection_client,
+            )
+            .await;
         }
     } else {
-        updater::update_once(config, handle, notifier, heartbeat, cf_cache, ppfmt, &mut noop_reported, detection_client).await;
+        let domains = domains_chan.borrow_and_update();
+        updater::update_once(
+            config,
+            &domains,
+            handle,
+            notifier,
+            heartbeat,
+            cf_cache,
+            ppfmt,
+            &mut noop_reported,
+            detection_client,
+        )
+        .await;
     }
 }
 
 async fn run_env_mode(
     config: &AppConfig,
+    domains_chan: &mut Receiver<HashMap<IpType, Vec<String>>>,
     handle: &CloudflareHandle,
     notifier: &CompositeNotifier,
     heartbeat: &Heartbeat,
@@ -211,7 +319,19 @@ async fn run_env_mode(
     match &config.update_cron {
         CronSchedule::Once => {
             if config.update_on_start {
-                updater::update_once(config, handle, notifier, heartbeat, cf_cache, ppfmt, &mut noop_reported, detection_client).await;
+                let domains = domains_chan.borrow_and_update();
+                updater::update_once(
+                    config,
+                    &domains,
+                    handle,
+                    notifier,
+                    heartbeat,
+                    cf_cache,
+                    ppfmt,
+                    &mut noop_reported,
+                    detection_client,
+                )
+                .await;
             }
         }
         schedule => {
@@ -227,7 +347,19 @@ async fn run_env_mode(
 
             // Update on start if configured
             if config.update_on_start {
-                updater::update_once(config, handle, notifier, heartbeat, cf_cache, ppfmt, &mut noop_reported, detection_client).await;
+                let domains = domains_chan.borrow_and_update();
+                updater::update_once(
+                    config,
+                    &domains,
+                    handle,
+                    notifier,
+                    heartbeat,
+                    cf_cache,
+                    ppfmt,
+                    &mut noop_reported,
+                    detection_client,
+                )
+                .await;
             }
 
             // Main loop
@@ -245,6 +377,13 @@ async fn run_env_mode(
                     if !running.load(Ordering::SeqCst) {
                         return;
                     }
+
+                    match domains_chan.has_changed() {
+                        Ok(true) => break, // Changed
+                        Ok(false) => {}    // No change yet
+                        Err(_) => return,  // channel closed
+                    }
+
                     sleep(Duration::from_secs(1)).await;
                 }
 
@@ -260,7 +399,19 @@ async fn run_env_mode(
                     sleep(std::time::Duration::from_secs(jitter_secs)).await;
                 }
 
-                updater::update_once(config, handle, notifier, heartbeat, cf_cache, ppfmt, &mut noop_reported, detection_client).await;
+                let domains = domains_chan.borrow_and_update();
+                updater::update_once(
+                    config,
+                    &domains,
+                    handle,
+                    notifier,
+                    heartbeat,
+                    cf_cache,
+                    ppfmt,
+                    &mut noop_reported,
+                    detection_client,
+                )
+                .await;
             }
         }
     }
@@ -319,8 +470,8 @@ pub(crate) fn test_client() -> reqwest::Client {
 #[cfg(test)]
 mod tests {
     use crate::config::{
-        LegacyAuthentication, LegacyCloudflareEntry, LegacyConfig, LegacySubdomainEntry,
-        parse_legacy_config,
+        parse_legacy_config, LegacyAuthentication, LegacyCloudflareEntry, LegacyConfig,
+        LegacySubdomainEntry,
     };
     use crate::provider::parse_trace_ip;
     use reqwest::Client;
@@ -566,8 +717,7 @@ mod tests {
                             println!("[DRY RUN] Would add new record {fqdn} -> {ip}");
                         } else {
                             println!("Adding new record {fqdn} -> {ip}");
-                            let create_endpoint =
-                                format!("zones/{}/dns_records", entry.zone_id);
+                            let create_endpoint = format!("zones/{}/dns_records", entry.zone_id);
                             let _: Option<serde_json::Value> = self
                                 .cf_api(
                                     &create_endpoint,
@@ -696,8 +846,15 @@ mod tests {
 
         let ddns = TestDdnsClient::new(&mock_server.uri());
         let config = test_config(zone_id);
-        ddns.commit_record("198.51.100.7", "A", &config.cloudflare, 300, false, &mut std::collections::HashSet::new())
-            .await;
+        ddns.commit_record(
+            "198.51.100.7",
+            "A",
+            &config.cloudflare,
+            300,
+            false,
+            &mut std::collections::HashSet::new(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -745,8 +902,15 @@ mod tests {
 
         let ddns = TestDdnsClient::new(&mock_server.uri());
         let config = test_config(zone_id);
-        ddns.commit_record("198.51.100.7", "A", &config.cloudflare, 300, false, &mut std::collections::HashSet::new())
-            .await;
+        ddns.commit_record(
+            "198.51.100.7",
+            "A",
+            &config.cloudflare,
+            300,
+            false,
+            &mut std::collections::HashSet::new(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -788,8 +952,15 @@ mod tests {
 
         let ddns = TestDdnsClient::new(&mock_server.uri());
         let config = test_config(zone_id);
-        ddns.commit_record("198.51.100.7", "A", &config.cloudflare, 300, false, &mut std::collections::HashSet::new())
-            .await;
+        ddns.commit_record(
+            "198.51.100.7",
+            "A",
+            &config.cloudflare,
+            300,
+            false,
+            &mut std::collections::HashSet::new(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -822,8 +993,15 @@ mod tests {
 
         let ddns = TestDdnsClient::new(&mock_server.uri()).dry_run();
         let config = test_config(zone_id);
-        ddns.commit_record("198.51.100.7", "A", &config.cloudflare, 300, false, &mut std::collections::HashSet::new())
-            .await;
+        ddns.commit_record(
+            "198.51.100.7",
+            "A",
+            &config.cloudflare,
+            300,
+            false,
+            &mut std::collections::HashSet::new(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -879,8 +1057,15 @@ mod tests {
             ip4_provider: None,
             ip6_provider: None,
         };
-        ddns.commit_record("198.51.100.7", "A", &config.cloudflare, 300, true, &mut std::collections::HashSet::new())
-            .await;
+        ddns.commit_record(
+            "198.51.100.7",
+            "A",
+            &config.cloudflare,
+            300,
+            true,
+            &mut std::collections::HashSet::new(),
+        )
+        .await;
     }
 
     // --- jitter_duration tests ---
@@ -1004,7 +1189,14 @@ mod tests {
             ip6_provider: None,
         };
 
-        ddns.commit_record("203.0.113.99", "A", &config.cloudflare, 300, false, &mut std::collections::HashSet::new())
-            .await;
+        ddns.commit_record(
+            "203.0.113.99",
+            "A",
+            &config.cloudflare,
+            300,
+            false,
+            &mut std::collections::HashSet::new(),
+        )
+        .await;
     }
 }

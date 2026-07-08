@@ -29,6 +29,7 @@ Configure everything with environment variables. Supports notifications, heartbe
 - 🔒 **Zero-log IP detection** — Uses Cloudflare's [cdn-cgi/trace](https://www.cloudflare.com/cdn-cgi/trace) by default
 - 🏠 **CGNAT-aware local detection** — Filters out shared address space (100.64.0.0/10) and private ranges
 - 🚫 **Cloudflare IP rejection** — Automatically rejects Cloudflare anycast IPs to prevent incorrect DNS updates
+- 🐳 **Docker domain discovery** — Automatically discover domains from Docker container labels
 - 🤏 **Tiny static binary** — ~1.1 MB Docker image built from scratch, zero runtime dependencies
 
 ## 🚀 Quick Start
@@ -58,15 +59,40 @@ To generate an API token, go to your [Cloudflare Profile](https://dash.cloudflar
 
 ## 🌐 Domains
 
-| Variable | Description |
-|----------|-------------|
-| `DOMAINS` | Comma-separated list of domains to update for both IPv4 and IPv6 |
-| `IP4_DOMAINS` | Comma-separated list of IPv4-only domains |
-| `IP6_DOMAINS` | Comma-separated list of IPv6-only domains |
+| Variable      | Description                                                      |
+| ------------- | ---------------------------------------------------------------- |
+| `DOMAINS`     | Comma-separated list of domains to update for both IPv4 and IPv6 |
+| `IP4_DOMAINS` | Comma-separated list of IPv4-only domains                        |
+| `IP6_DOMAINS` | Comma-separated list of IPv6-only domains                        |
+| `DOCKER_HOST` | Docker socket path for automatic domain discovery                |
 
 Wildcard domains are supported: `*.example.com`
 
-At least one of `DOMAINS`, `IP4_DOMAINS`, `IP6_DOMAINS`, or `WAF_LISTS` must be set.
+At least one of `DOMAINS`, `IP4_DOMAINS`, `IP6_DOMAINS`, `DOCKER_HOST`, or `WAF_LISTS` must be set.
+
+### 🐳 Docker Domain Discovery
+
+When `DOCKER_HOST` is set to a Docker socket path (e.g., `unix:///var/run/docker.sock`), the tool will automatically discover domains from Docker container label `ddns.domain`.
+
+```yaml
+version: '3.9'
+services:
+  ddns:
+    image: timothyjmiller/cloudflare-ddns:latest
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock:ro'
+
+  my-app:
+    image: my-image:latest
+    labels:
+      - 'ddns.domain=app.example.com'
+```
+
+Discovered domains are combined with statically configured `DOMAINS`, `IP4_DOMAINS`, and `IP6_DOMAINS`. When containers are removed or labels change, the tool automatically removes their DNS records if `DELETE_ON_STOP` is enabled.
 
 ## 🔍 IP Detection Providers
 
@@ -210,6 +236,7 @@ Heartbeats are sent after each update cycle. On failure, a fail signal is sent. 
 | `DOMAINS` | — | 🌐 Domains for both IPv4 and IPv6 |
 | `IP4_DOMAINS` | — | 4️⃣ IPv4-only domains |
 | `IP6_DOMAINS` | — | 6️⃣ IPv6-only domains |
+| `DOCKER_HOST` | — | 🐳 Docker socket path for domain discovery |
 | `IP4_PROVIDER` | `ipify` | 🔍 IPv4 detection provider |
 | `IP6_PROVIDER` | `cloudflare.trace` | 🔍 IPv6 detection provider |
 | `UPDATE_CRON` | `@every 5m` | ⏱️ Update schedule |
