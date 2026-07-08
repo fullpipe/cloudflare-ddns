@@ -1,7 +1,7 @@
-use crate::cloudflare::{Auth, TTL, WAFList};
+use crate::cloudflare::{Auth, WAFList, TTL};
 use crate::domain;
 use crate::notifier::{
-    CompositeNotifier, Heartbeat, HeartbeatMonitor, HealthchecksMonitor, NotifierDyn,
+    CompositeNotifier, HealthchecksMonitor, Heartbeat, HeartbeatMonitor, NotifierDyn,
     ShoutrrrNotifier, UptimeKumaMonitor,
 };
 use crate::pp::{self, PP};
@@ -131,9 +131,15 @@ impl CronSchedule {
 fn parse_duration_string(s: &str) -> Option<Duration> {
     let s = s.trim();
     if let Some(minutes) = s.strip_suffix('m') {
-        minutes.parse::<u64>().ok().map(|m| Duration::from_secs(m * 60))
+        minutes
+            .parse::<u64>()
+            .ok()
+            .map(|m| Duration::from_secs(m * 60))
     } else if let Some(hours) = s.strip_suffix('h') {
-        hours.parse::<u64>().ok().map(|h| Duration::from_secs(h * 3600))
+        hours
+            .parse::<u64>()
+            .ok()
+            .map(|h| Duration::from_secs(h * 3600))
     } else if let Some(secs) = s.strip_suffix('s') {
         secs.parse::<u64>().ok().map(Duration::from_secs)
     } else {
@@ -147,7 +153,10 @@ fn parse_duration_string(s: &str) -> Option<Duration> {
 // ============================================================
 
 fn getenv(key: &str) -> Option<String> {
-    env::var(key).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn getenv_bool(key: &str, default: bool) -> bool {
@@ -188,7 +197,10 @@ fn read_auth_from_env(ppfmt: &PP) -> Option<Auth> {
         val
     }) {
         if token == "YOUR-CLOUDFLARE-API-TOKEN" {
-            ppfmt.errorf(pp::EMOJI_ERROR, "Please set CLOUDFLARE_API_TOKEN to your actual API token");
+            ppfmt.errorf(
+                pp::EMOJI_ERROR,
+                "Please set CLOUDFLARE_API_TOKEN to your actual API token",
+            );
             return None;
         }
         return Some(Auth::Token(token));
@@ -213,7 +225,10 @@ fn read_auth_from_env(ppfmt: &PP) -> Option<Auth> {
                 }
             }
             Err(e) => {
-                ppfmt.errorf(pp::EMOJI_ERROR, &format!("Failed to read API token file '{path}': {e}"));
+                ppfmt.errorf(
+                    pp::EMOJI_ERROR,
+                    &format!("Failed to read API token file '{path}': {e}"),
+                );
             }
         }
     }
@@ -235,27 +250,31 @@ fn read_providers_from_env(ppfmt: &PP) -> Result<HashMap<IpType, ProviderType>, 
     let ip4_str = getenv("IP4_PROVIDER").or_else(|| {
         let val = getenv("IP4_POLICY");
         if val.is_some() {
-            ppfmt.warningf(pp::EMOJI_WARNING, "IP4_POLICY is deprecated; use IP4_PROVIDER instead");
+            ppfmt.warningf(
+                pp::EMOJI_WARNING,
+                "IP4_POLICY is deprecated; use IP4_PROVIDER instead",
+            );
         }
         val
     });
     let ip6_str = getenv("IP6_PROVIDER").or_else(|| {
         let val = getenv("IP6_POLICY");
         if val.is_some() {
-            ppfmt.warningf(pp::EMOJI_WARNING, "IP6_POLICY is deprecated; use IP6_PROVIDER instead");
+            ppfmt.warningf(
+                pp::EMOJI_WARNING,
+                "IP6_POLICY is deprecated; use IP6_PROVIDER instead",
+            );
         }
         val
     });
 
     let ip4_provider = match ip4_str {
-        Some(s) => ProviderType::parse(&s)
-            .map_err(|e| format!("Invalid IP4_PROVIDER: {e}"))?,
+        Some(s) => ProviderType::parse(&s).map_err(|e| format!("Invalid IP4_PROVIDER: {e}"))?,
         None => ProviderType::CloudflareTrace { url: None },
     };
 
     let ip6_provider = match ip6_str {
-        Some(s) => ProviderType::parse(&s)
-            .map_err(|e| format!("Invalid IP6_PROVIDER: {e}"))?,
+        Some(s) => ProviderType::parse(&s).map_err(|e| format!("Invalid IP6_PROVIDER: {e}"))?,
         None => ProviderType::CloudflareTrace { url: None },
     };
 
@@ -393,7 +412,11 @@ pub fn parse_legacy_config(content: &str) -> Result<LegacyConfig, String> {
 }
 
 /// Convert a legacy config into a unified AppConfig
-fn legacy_to_app_config(legacy: LegacyConfig, dry_run: bool, repeat: bool) -> Result<AppConfig, String> {
+fn legacy_to_app_config(
+    legacy: LegacyConfig,
+    dry_run: bool,
+    repeat: bool,
+) -> Result<AppConfig, String> {
     // Extract auth from first entry
     let auth = if let Some(entry) = legacy.cloudflare.first() {
         if !entry.authentication.api_token.is_empty()
@@ -484,6 +507,7 @@ pub fn is_env_config_mode() -> bool {
         || getenv("CLOUDFLARE_API_TOKEN_FILE").is_some()
         || getenv("CF_API_TOKEN_FILE").is_some()
         || getenv("DOMAINS").is_some()
+        || getenv("DOCKER_HOST").is_some()
         || getenv("IP4_DOMAINS").is_some()
         || getenv("IP6_DOMAINS").is_some()
 }
@@ -624,11 +648,17 @@ pub fn setup_notifiers(ppfmt: &PP) -> CompositeNotifier {
     if !shoutrrr_urls.is_empty() {
         match ShoutrrrNotifier::new(&shoutrrr_urls) {
             Ok(n) => {
-                ppfmt.infof(pp::EMOJI_NOTIFY, &format!("Notifications: {}", n.describe()));
+                ppfmt.infof(
+                    pp::EMOJI_NOTIFY,
+                    &format!("Notifications: {}", n.describe()),
+                );
                 notifiers.push(Box::new(n));
             }
             Err(e) => {
-                ppfmt.errorf(pp::EMOJI_ERROR, &format!("Failed to setup notifications: {e}"));
+                ppfmt.errorf(
+                    pp::EMOJI_ERROR,
+                    &format!("Failed to setup notifications: {e}"),
+                );
             }
         }
     }
@@ -667,7 +697,10 @@ pub fn print_config_summary(config: &AppConfig, ppfmt: &PP) {
     if !config.domains.is_empty() {
         ppfmt.noticef(pp::EMOJI_CONFIG, "Domains to update:");
         for (ip_type, domains) in &config.domains {
-            inner.noticef("", &format!("{}: {}", ip_type.describe(), domains.join(", ")));
+            inner.noticef(
+                "",
+                &format!("{}: {}", ip_type.describe(), domains.join(", ")),
+            );
         }
     }
 
@@ -679,7 +712,10 @@ pub fn print_config_summary(config: &AppConfig, ppfmt: &PP) {
     }
 
     for (ip_type, provider) in &config.providers {
-        inner.infof("", &format!("{} provider: {}", ip_type.describe(), provider.name()));
+        inner.infof(
+            "",
+            &format!("{} provider: {}", ip_type.describe(), provider.name()),
+        );
     }
 
     inner.infof("", &format!("TTL: {}", config.ttl.describe()));
@@ -690,7 +726,10 @@ pub fn print_config_summary(config: &AppConfig, ppfmt: &PP) {
     }
 
     if !config.reject_cloudflare_ips {
-        inner.warningf("", "Cloudflare IP rejection: DISABLED (REJECT_CLOUDFLARE_IPS=false)");
+        inner.warningf(
+            "",
+            "Cloudflare IP rejection: DISABLED (REJECT_CLOUDFLARE_IPS=false)",
+        );
     }
 
     if let Some(ref comment) = config.record_comment {
@@ -770,7 +809,10 @@ mod tests {
 
     #[test]
     fn test_parse_duration_string_whitespace() {
-        assert_eq!(parse_duration_string("  5m  "), Some(Duration::from_secs(300)));
+        assert_eq!(
+            parse_duration_string("  5m  "),
+            Some(Duration::from_secs(300))
+        );
     }
 
     #[test]
@@ -966,7 +1008,10 @@ mod tests {
         std::env::remove_var("IP6_DOMAINS");
         let pp = PP::new(false, false);
         let domains = read_domains_from_env(&pp);
-        assert_eq!(domains.get(&IpType::V4).unwrap(), &vec!["v4.example.com".to_string()]);
+        assert_eq!(
+            domains.get(&IpType::V4).unwrap(),
+            &vec!["v4.example.com".to_string()]
+        );
         assert!(domains.get(&IpType::V6).is_none());
         std::env::remove_var("IP4_DOMAINS");
     }
@@ -1053,7 +1098,9 @@ mod tests {
             ip6_provider: None,
         };
         let config = legacy_to_app_config(legacy, true, true).unwrap();
-        assert!(matches!(config.update_cron, CronSchedule::Every(d) if d == Duration::from_secs(120)));
+        assert!(
+            matches!(config.update_cron, CronSchedule::Every(d) if d == Duration::from_secs(120))
+        );
         assert!(config.repeat);
         assert!(config.dry_run);
     }
@@ -1106,7 +1153,10 @@ mod tests {
         };
         let config = legacy_to_app_config(legacy, false, false).unwrap();
         assert!(matches!(config.providers[&IpType::V4], ProviderType::Ipify));
-        assert!(matches!(config.providers[&IpType::V6], ProviderType::CloudflareDOH));
+        assert!(matches!(
+            config.providers[&IpType::V6],
+            ProviderType::CloudflareDOH
+        ));
     }
 
     #[test]
@@ -1401,7 +1451,10 @@ mod tests {
         fn set(key: &str, value: &str) -> Self {
             let lock = ENV_MUTEX.lock().unwrap();
             std::env::set_var(key, value);
-            Self { keys: vec![key.to_string()], _lock: lock }
+            Self {
+                keys: vec![key.to_string()],
+                _lock: lock,
+            }
         }
 
         fn add(&mut self, key: &str, value: &str) {

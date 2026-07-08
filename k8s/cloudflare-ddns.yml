@@ -15,16 +15,16 @@ spec:
     spec:
       containers:
         - name: cloudflare-ddns
-          image: timothyjmiller/cloudflare-ddns:latest
+          image: fullpipe/cloudflare-ddns:latest
           resources:
             limits:
-              memory: '32Mi'
-              cpu: '50m'
+              memory: "32Mi"
+              cpu: "50m"
           env:
             - name: CONFIG_PATH
-              value: '/etc/cloudflare-ddns/'
+              value: "/etc/cloudflare-ddns/"
           volumeMounts:
-            - mountPath: '/etc/cloudflare-ddns'
+            - mountPath: "/etc/cloudflare-ddns"
               name: config-cloudflare-ddns
               readOnly: true
       volumes:

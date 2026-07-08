@@ -8,7 +8,7 @@ A feature-complete dynamic DNS client for Cloudflare, written in Rust. The **sma
 
 Configure everything with environment variables. Supports notifications, heartbeat monitoring, WAF list management, flexible scheduling, and more.
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/timothyjmiller/cloudflare-ddns?style=flat&logo=docker&label=pulls)](https://hub.docker.com/r/timothyjmiller/cloudflare-ddns) [![Docker Image Size](https://img.shields.io/docker/image-size/timothyjmiller/cloudflare-ddns/latest?style=flat&logo=docker&label=image%20size)](https://hub.docker.com/r/timothyjmiller/cloudflare-ddns)
+[![Docker Pulls](https://img.shields.io/docker/pulls/fullpipe/cloudflare-ddns?style=flat&logo=docker&label=pulls)](https://hub.docker.com/r/fullpipe/cloudflare-ddns) [![Docker Image Size](https://img.shields.io/docker/image-size/fullpipe/cloudflare-ddns/latest?style=flat&logo=docker&label=image%20size)](https://hub.docker.com/r/fullpipe/cloudflare-ddns)
 
 ## ✨ Features
 
@@ -41,7 +41,7 @@ docker run -d \
   --network host \
   -e CLOUDFLARE_API_TOKEN=your-api-token \
   -e DOMAINS=example.com,www.example.com \
-  timothyjmiller/cloudflare-ddns:latest
+  fullpipe/cloudflare-ddns:latest
 ```
 
 That's it. The container detects your public IP and updates the DNS records for your domains every 5 minutes.
@@ -78,7 +78,7 @@ When `DOCKER_HOST` is set to a Docker socket path (e.g., `unix:///var/run/docker
 version: '3.9'
 services:
   ddns:
-    image: timothyjmiller/cloudflare-ddns:latest
+    image: fullpipe/cloudflare-ddns:latest
     restart: unless-stopped
     network_mode: host
     environment:
@@ -270,7 +270,7 @@ Heartbeats are sent after each update cycle. On failure, a fail signal is sent. 
 version: '3.9'
 services:
   cloudflare-ddns:
-    image: timothyjmiller/cloudflare-ddns:latest
+    image: fullpipe/cloudflare-ddns:latest
     container_name: cloudflare-ddns
     security_opt:
       - no-new-privileges:true
@@ -545,7 +545,7 @@ In the legacy config file, values can reference environment variables with the `
 version: '3.9'
 services:
   cloudflare-ddns:
-    image: timothyjmiller/cloudflare-ddns:latest
+    image: fullpipe/cloudflare-ddns:latest
     container_name: cloudflare-ddns
     security_opt:
       - no-new-privileges:true
